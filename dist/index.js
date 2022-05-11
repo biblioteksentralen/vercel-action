@@ -1947,7 +1947,21 @@ async function setEnv() {
   }
 }
 
-async function vercelDeploy(ref, commit) {
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function waitForBuild(api, url) {
+  const buildStates = ["INITIALIZING", "QUEUED", "BUILDING"]
+  while (true) {
+    const deployment = await api.getDeployment(url)
+    core.info(`Ready? ${deployment.readyState}`)
+    if (!buildStates.includes(deployment.readyState)) {
+      return;
+    }
+    await sleep(1000)  
+  }
+}
+
+async function vercelDeploy({api, ref, commit, sha}) {
   let myOutput = '';
   // eslint-disable-next-line no-unused-vars
   let myError = '';
@@ -1967,44 +1981,77 @@ async function vercelDeploy(ref, commit) {
     options.cwd = workingDirectory;
   }
 
-  const args = [
-    ...vercelArgs.split(/ +/),
-    '-t',
-    vercelToken,
-    '-m',
-    `githubCommitSha=${context.sha}`,
-    '-m',
-    `githubCommitAuthorName=${context.actor}`,
-    '-m',
-    `githubCommitAuthorLogin=${context.actor}`,
-    '-m',
-    'githubDeployment=1',
-    '-m',
-    `githubOrg=${context.repo.owner}`,
-    '-m',
-    `githubRepo=${context.repo.repo}`,
-    '-m',
-    `githubCommitOrg=${context.repo.owner}`,
-    '-m',
-    `githubCommitRepo=${context.repo.repo}`,
-    '-m',
-    `githubCommitMessage=${commit}`,
-    '-m',
-    `githubCommitRef=${ref.replace('refs/heads/', '')}`,
-  ];
-
-  if (vercelScope) {
-    core.info('using scope');
-    args.push('--scope', vercelScope);
+  const deploymentData = {
+    name: vercelProjectName,
+    project: vercelProjectId,
+    gitSource: {
+      type: "github",
+      org: context.repo.owner,
+      repo: context.repo.repo,
+      ref: ref,
+      sha: sha,
+      // prId: number // @TODO
+    },
+    meta: {
+      githubCommitSha: context.sha,
+      githubCommitAuthorName: context.actor,
+      githubCommitAuthorLogin: context.actor,
+      githubOrg: context.repo.owner,
+      githubRepo: context.repo.repo,
+      githubCommitMessage: commit,
+      githubCommitRef: ref.replace('refs/heads/', ''),
+    }
   }
 
-  await exec.exec('npx', ['vercel', ...args], options);
+  core.info(JSON.stringify(deploymentData, undefined, 2))
 
-  return myOutput.replace('https://', '');
+  const deployment = await api.createDeployment(deploymentData)
+  core.info(JSON.stringify(deployment, undefined, 2))
+
+  core.info(`---------------------------------------------`)
+  core.info('Deployment started')
+  core.info(`URL: https://${deployment.url}`)
+  core.info(`INSPECT: ${deployment.inspectorUrl}`)
+  core.info(`---------------------------------------------`)
+  await waitForBuild(api, deployment.url)
+  core.info(`---------------------------------------------`)
+  core.info(`Deployment finished`)
+
+
+
+  // @TODO: How to handle vercelArgs?
+
+  // const args = [
+  //   ...vercelArgs.split(/ +/),
+
+  //   'githubDeployment=1',
+  //   '-m',
+  //   `githubOrg=${context.repo.owner}`,
+  //   '-m',
+  //   `githubRepo=${context.repo.repo}`,
+  //   '-m',
+  //   `githubCommitOrg=${context.repo.owner}`,
+  //   '-m',
+  //   `githubCommitRepo=${context.repo.repo}`,
+  //   '-m',
+  //   `githubCommitMessage=${commit}`,
+  //   '-m',
+  //   `githubCommitRef=${ref.replace('refs/heads/', '')}`,
+  // ];
+
+  // if (vercelScope) {
+  //   core.info('using scope');
+  //   args.push('--scope', vercelScope);
+  // }
+
+  // await exec.exec('npx', ['vercel', ...args], options);
+
+  return deployment.url.replace('https://', '');
 }
 
 const createApiClient = (vercelToken, teamId = null) => {
   return {
+    createDeployment,
     getDeployment,
     assignAlias,
   };
@@ -2016,7 +2063,18 @@ const createApiClient = (vercelToken, teamId = null) => {
       url,
       headers: { 'Authorization': `Bearer ${vercelToken}` },
       ...options
+    }).catch((err) => {
+      core.error(err.response.data)
+      throw err;
     })
+  }
+
+  async function createDeployment(data) {
+    return request(`/v13/deployments`, {
+      method: 'post',
+      data
+    })
+      .then((response) => response.data)
   }
 
   async function getDeployment(deploymentUrl) {
@@ -2209,7 +2267,7 @@ async function run() {
     }
   }
 
-  const deploymentUrl = await vercelDeploy(ref, commit);
+  const deploymentUrl = await vercelDeploy({api, ref, commit, sha});
 
   if (deploymentUrl) {
     core.info(`deployment-url: ${deploymentUrl}`)
