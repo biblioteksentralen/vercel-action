@@ -39,16 +39,27 @@ function slugify(str) {
 }
 
 function retry(fn, retries) {
-  async function attempt(retry) {
+  async function attempt(attemptNumber) {
     try {
-      return await fn();
+      core.info(`[retry attempt ${attemptNumber}] Trying to run`);
+      const res = await fn();
+      core.info(
+        `[retry attempt ${attemptNumber}] 🎉 Run complete: ${JSON.stringify(
+          res,
+        )}`,
+      );
+      return res;
     } catch (error) {
-      if (retry > retries) {
+      core.warning(`[retry attempt ${attemptNumber}] 💣 Run failed`);
+      if (attemptNumber > retries) {
+        core.warning(
+          `[retry attempt ${attemptNumber}] ${retries} retries exhausted`,
+        );
         throw error;
       } else {
-        core.info(`retrying: attempt ${retry + 1} / ${retries + 1}`);
+        core.info(`retrying: attempt ${attemptNumber + 1} / ${retries + 1}`);
         await new Promise(resolve => setTimeout(resolve, 3000));
-        return attempt(retry + 1);
+        return attempt(attemptNumber + 1);
       }
     }
   }
